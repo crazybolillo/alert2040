@@ -32,6 +32,7 @@ target_compile_definitions(alert2040 PRIVATE
 target_link_libraries(alert2040
     pico_stdlib
     hardware_adc
+    hardware_timer
     pico_cyw43_arch_lwip_sys_freertos
     FreeRTOS-Kernel-Heap4
 )
