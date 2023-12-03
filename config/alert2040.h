@@ -11,4 +11,12 @@
 #define TRIG_PIN 9
 #define ECHO_PIN 8
 
+struct HttpRequest {
+    char *request_line;
+    char *payload;
+};
+
+void init_http(void);
+void http_task(void *params);
+
 #endif  // ALERT2040_ALERT2040_H

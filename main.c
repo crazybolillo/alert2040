@@ -7,14 +7,15 @@
 
 #include "alert2040.h"
 
+enum { BUFFER_SIZE = 64 };
+
 static const float DISTANCE_THRESHOLD = 40.0F;
-static const float ADC_LDR_THRESHOLD = 2.5F;
+static const float ADC_LDR_THRESHOLD = 2.2F;
 
 static const float ADC_RES = 3.3f / (1 << 12);
 
-static volatile int led_off_time = 1980;
-static volatile float distance = 0;
-static volatile float voltage = 0;
+static volatile float distance = 999;
+static volatile float voltage = 3.3;
 
 static volatile uint32_t pulse_start = 0;
 static volatile uint32_t pulse_end = 0;
@@ -22,11 +23,34 @@ static volatile uint32_t pulse_end = 0;
 static TaskHandle_t monitor_handle;
 static TaskHandle_t usonic_handle;
 static TaskHandle_t print_handle;
+static TaskHandle_t http_handle;
 static TaskHandle_t adc_handle;
+
+static char buffer[BUFFER_SIZE];
+static struct HttpRequest warningRequest = {.request_line = "POST / HTTP/1.1\r\n", .payload = buffer};
+
+// ------------------------------
+// ------ Shared variables ------
+volatile int blink_off_ms = 1980;
+volatile bool wifi_connected = false;
+// ------------------------------
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     gpio_put(LED_ERROR, true);
     while (1) {}
+}
+
+/**
+ * Blink the onboard LED to provide status. If it blinks rapidly it means the WiFi connection has failed.
+ * @param params
+ */
+void blink_task(void *params) {
+    while (1) {
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+        vTaskDelay(pdMS_TO_TICKS(blink_off_ms));
+    }
 }
 
 /**
@@ -36,10 +60,19 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
  */
 void monitor_task(void *params) {
     while (1) {
-        if (distance <= DISTANCE_THRESHOLD) {
+        float distance_snap = distance;
+        float voltage_snap = voltage;
+
+        if (distance_snap <= DISTANCE_THRESHOLD) {
             gpio_put(LED_PROXIMITY, true);
-            if (voltage <= ADC_LDR_THRESHOLD) {
+            if (voltage_snap <= ADC_LDR_THRESHOLD) {
                 gpio_put(LED_WARNING, true);
+                snprintf(
+                    buffer, BUFFER_SIZE, "{\"Info\": \"Voltage %04.2f --- Distance %06.2f\"}", voltage_snap,
+                    distance_snap
+                );
+                xTaskNotify(http_handle, (uint32_t)&warningRequest, eSetValueWithOverwrite);
+                vTaskDelay(pdMS_TO_TICKS(5000));
             } else {
                 gpio_put(LED_WARNING, false);
             }
@@ -123,6 +156,22 @@ void launch_task(void *params) {
     }
     gpio_put(LED_ERROR, true);
 
+    if (cyw43_arch_init_with_country(CYW43_COUNTRY_MEXICO) != 0) {
+        while (1) {}
+    }
+    cyw43_arch_enable_sta_mode();
+
+    printf("connecting to %s\r\n", WIFI_SSID);
+    printf("using PSK %s and timeout %d ms\r\n\r\n", WIFI_PSK, WIFI_TIMEOUT);
+    int err = cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PSK, CYW43_AUTH_WPA2_AES_PSK, WIFI_TIMEOUT);
+    if (err) {
+        printf("error %d\r\n", err);
+        blink_off_ms = 300;
+    } else {
+        wifi_connected = true;
+        blink_off_ms = 1980;
+    }
+
     xTaskCreate(print_task, "print", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, &print_handle);
     configASSERT(&print_handle);
 
@@ -133,11 +182,16 @@ void launch_task(void *params) {
     configASSERT(&usonic_handle);
 
     xTaskCreate(monitor_task, "monitor", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, &monitor_handle);
-    configASSERT(monitor_handle);
+    configASSERT(&monitor_handle);
+
+    xTaskCreate(blink_task, "blink", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+
+    xTaskCreate(http_task, "http", configMINIMAL_STACK_SIZE * 2, NULL, tskIDLE_PRIORITY + 2, &http_handle);
+    configASSERT(&http_handle);
 
     irq_set_enabled(IO_IRQ_BANK0, true);
-
     gpio_put(LED_ERROR, false);
+
     vTaskDelete(NULL);
 }
 
@@ -155,7 +209,7 @@ void setup_hardware() {
     gpio_init(ECHO_PIN);
     gpio_set_dir(ECHO_PIN, GPIO_IN);
 
-    irq_set_exclusive_handler(IO_IRQ_BANK0, ultrasonic_irq);
+    gpio_add_raw_irq_handler(ECHO_PIN, ultrasonic_irq);
     gpio_set_irq_enabled(ECHO_PIN, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
 }
 
@@ -163,7 +217,7 @@ int main() {
     stdio_init_all();
     setup_hardware();
 
-    xTaskCreateAffinitySet(launch_task, "launch", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 6, 0x01, NULL);
+    xTaskCreateAffinitySet(launch_task, "launch", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, 0x01, NULL);
     vTaskStartScheduler();
 
     return 0;
