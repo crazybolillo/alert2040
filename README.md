@@ -7,8 +7,8 @@ It shows the basics of using [Raspberry's Pico SDK](https://github.com/raspberry
 communicates over HTTP with remote servers.
 
 # Building and Flashing
-This is a CMake project, so the build process is the same as for any other CMake project. 
-In order to flash it you can use [picoprobe](https://github.com/raspberrypi/picoprobe) together with 
+This is a CMake project, so the build process is the same as for any other CMake project.
+In order to flash it you can use [picoprobe](https://github.com/raspberrypi/picoprobe) together with
 [OpenOCD](https://openocd.org/) to flash the generated `.elf` file.
 
 To run OpenOCD use:
